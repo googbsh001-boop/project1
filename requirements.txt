@@ -3,3 +3,4 @@ google-auth
 pandas
 pyxlsb
 openpyxl
+gspread-formatting
