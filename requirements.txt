@@ -1,2 +1,5 @@
 gspread
 google-auth
+pandas
+pyxlsb
+openpyxl
