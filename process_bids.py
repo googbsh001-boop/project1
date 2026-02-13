@@ -1,4 +1,5 @@
 import os
+import sys
 import pandas as pd
 import gspread
 from google.oauth2.service_account import Credentials
@@ -7,6 +8,9 @@ import re
 import openpyxl
 from gspread_formatting import format_cell_ranges, CellFormat, Color
 from gspread.utils import rowcol_to_a1
+
+# 인코딩 설정
+sys.stdout.reconfigure(encoding='utf-8')
 
 # --- 설정 ---
 CREDENTIALS_FILE = 'credentials.json'
@@ -40,13 +44,15 @@ def load_company_colors():
         company_colors = {}
         
         # 색상 매핑 (Theme/Tint -> Google Color)
-        # 1. Theme 9 (경남 등) -> Light Green
-        color_group_1 = Color(0.8, 1.0, 0.8) 
-        # 2. Theme 6 (계룡 등) -> Light Orange/Pink
-        color_group_2 = Color(1.0, 0.9, 0.8)
-        # 3. Theme 8 (금호 등) -> Light Yellow/Gold
-        color_group_3 = Color(1.0, 1.0, 0.8)
+        # 1. Theme 9 (경남 등) -> Green (더 진한 쑥색/녹색)
+        color_group_1 = Color(0.7, 0.9, 0.7) 
         
+        # 2. Theme 6 (계룡 등) -> Orange (더 진한 살구색/주황)
+        color_group_2 = Color(1.0, 0.8, 0.6)
+        
+        # 3. Theme 8 (금호 등) -> Yellow (진한 노랑)
+        color_group_3 = Color(1.0, 1.0, 0.6)
+
         for row in ws.iter_rows():
             for cell in row:
                 if cell.value and isinstance(cell.value, str):
@@ -71,6 +77,30 @@ def load_company_colors():
         print(f"Error loading colors: {e}")
         return {}
 
+def find_color_for_company(company_name, color_map):
+    """회사명에 맞는 색상을 부분 일치로 검색"""
+    if not company_name: return None
+
+    # 1. 완전 일치
+    if company_name in color_map:
+        return color_map[company_name]
+    
+    # 2. 정제 후 부분 일치
+    # (주), 주식회사, 공백 제거
+    clean_target = company_name.replace("주식회사", "").replace("(주)", "").replace(" ", "")
+    
+    if not clean_target: return None
+
+    for key_name, color in color_map.items():
+        clean_key = key_name.replace("주식회사", "").replace("(주)", "").replace(" ", "")
+        
+        if not clean_key: continue
+
+        # 키가 타겟에 포함되거나, 타겟이 키에 포함되는 경우
+        if len(clean_key) > 1 and (clean_key in clean_target or clean_target in clean_key):
+             return color
+             
+    return None
 
 def extract_zone(filename):
     match = re.search(r'제(\d+)공구', filename)
@@ -83,7 +113,6 @@ def process_file(file_path):
     try:
         df = pd.read_excel(file_path, engine='pyxlsb', header=None)
         
-        # 데이터 테이블 시작 위치 찾기
         header_row_idx = -1
         for idx, row in df.iterrows():
             if str(row[0]).replace(" ", "") == "순위":
@@ -105,7 +134,6 @@ def process_file(file_path):
             try:
                 rank_val = int(rank_str)
                 company = str(row[1]).strip()
-                # 1순위(낙찰사)에 별표 표시
                 if rank_val == 1:
                     company = "★ " + company
 
@@ -124,7 +152,6 @@ def process_file(file_path):
             except (ValueError, TypeError):
                 continue
         
-        # 순위 기준으로 정렬
         data_rows.sort(key=lambda x: x['rank'])
         return data_rows
 
@@ -142,37 +169,29 @@ def main():
     except gspread.WorksheetNotFound:
         worksheet = sh.add_worksheet(title=WORKSHEET_NAME, rows=1000, cols=20)
     
-    # 1. 파일별 데이터 수집
     files = [f for f in os.listdir(FOLDER_PATH) if f.endswith('.xlsb')]
     
-    zone_data = {} # {'3공구': [row1, row2...], '4공구': ...}
-    
+    zone_data = {}
     for file_name in files:
         zone = extract_zone(file_name)
         file_path = os.path.join(FOLDER_PATH, file_name)
         rows = process_file(file_path)
         zone_data[zone] = rows
 
-    # 2. Side-by-Side 레이아웃 구성
     sorted_zones = sorted(zone_data.keys())
     
     upload_rows = []
     
-    # 헤더 1: 공구 이름
     header1 = []
-    # 헤더 2: 컬럼명
     header2 = []
     
     for zone in sorted_zones:
-        # 공구명 + 빈칸 3개 (4열 차지)
         header1.extend([f"■ {zone}", "", "", ""]) 
         header2.extend(["순위", "회사명", "입찰금액(억원)", "기초대비(%)"])
     
     upload_rows.append(header1)
     upload_rows.append(header2)
     
-    # 데이터 채우기
-    # 가장 긴 데이터 길이 찾기
     max_len = 0
     for zone in sorted_zones:
         max_len = max(max_len, len(zone_data[zone]))
@@ -190,20 +209,17 @@ def main():
                     round(entry['ratio'], 4)
                 ])
             else:
-                row_data.extend(["", "", "", ""]) # 데이터가 없으면 빈칸
+                row_data.extend(["", "", "", ""])
         upload_rows.append(row_data)
 
     if upload_rows:
         print("Uploading data...")
         worksheet.update(upload_rows)
         
-        # --- 스타일링 (하늘색 배경 적용) ---
-        from gspread_formatting import format_cell_ranges, CellFormat, Color
-        from gspread.utils import rowcol_to_a1
-
+        # --- 스타일링 ---
         print("Applying styles...")
         
-        # 하늘색 (Light Blue) - 공구/순위 열 배경
+        # 하늘색 (공구/순위 열)
         light_blue = Color(0.85, 0.93, 1.0) 
         fmt_blue = CellFormat(backgroundColor=light_blue)
         
@@ -218,27 +234,38 @@ def main():
             range_str = f"{start_cell}:{end_cell}"
             batch.append((range_str, fmt_blue))
             
-        # 2. 업체별 색상 적용
+        # 2. 업체별 색상 적용 (부분 일치)
         company_colors = load_company_colors()
+        color_batch_size = 0
+        
         if company_colors:
-            # 업로드된 데이터 순회하며 회사명 찾기 (3행부터 데이터 시작)
-            # header1(1행), header2(2행) 제외
+            print(f"Loaded {len(company_colors)} company colors for matching.")
+            
             for row_idx in range(2, total_rows): 
                 row_data = upload_rows[row_idx]
-                # 각 공구별 회사명 컬럼 위치: 1, 5, 9, 13 (0-based index applied to upload_rows list)
-                # Google Sheet column index (1-based): 2, 6, 10, 14
                 
                 for i in range(len(sorted_zones)):
-                    sheet_col_idx = i * 4 + 2 # 회사명 컬럼 (1-based)
-                    list_col_idx = i * 4 + 1  # upload_rows 리스트 인덱스 (0-based)
+                    sheet_col_idx = i * 4 + 2 
+                    list_col_idx = i * 4 + 1  
                     
                     if list_col_idx < len(row_data):
-                        company_val = str(row_data[list_col_idx]).replace("★ ", "").strip()
-                        if company_val in company_colors:
-                            cell_a1 = rowcol_to_a1(row_idx + 1, sheet_col_idx) # row_idx는 0-based, sheet는 1-based
-                            fmt_company = CellFormat(backgroundColor=company_colors[company_val])
+                        original_val = str(row_data[list_col_idx])
+                        company_val = original_val.replace("★ ", "").strip()
+                        
+                        if not company_val: continue
+                        
+                        # 부분 일치 검색
+                        matched_color = find_color_for_company(company_val, company_colors)
+                        
+                        if matched_color:
+                            cell_a1 = rowcol_to_a1(row_idx + 1, sheet_col_idx) 
+                            fmt_company = CellFormat(backgroundColor=matched_color)
                             batch.append((cell_a1, fmt_company))
+                            color_batch_size += 1
+                        elif row_idx < 10: 
+                             print(f"No match for: '{company_val}'")
 
+        print(f"Applying {len(batch)} format changes...")
         format_cell_ranges(worksheet, batch)
         print("Done!")
     else:
