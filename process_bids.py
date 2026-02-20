@@ -6,7 +6,7 @@ from google.oauth2.service_account import Credentials
 import datetime
 import re
 import openpyxl
-from gspread_formatting import format_cell_ranges, CellFormat, Color
+from gspread_formatting import format_cell_ranges, CellFormat, Color, TextFormat
 from gspread.utils import rowcol_to_a1
 
 # 인코딩 설정
@@ -24,13 +24,20 @@ SCOPES = [
     'https://www.googleapis.com/auth/drive'
 ]
 
+# 색상 및 그룹 정의 (전역 변수로 관리)
+GROUP_COLORS = {
+    'Theme_9': {'name': 'Group A (Green)', 'color': Color(0.7, 0.9, 0.7)},
+    'Theme_6': {'name': 'Group B (Orange)', 'color': Color(1.0, 0.8, 0.6)},
+    'Theme_8': {'name': 'Group C (Yellow)', 'color': Color(1.0, 1.0, 0.6)}
+}
+
 def get_google_sheet_client():
     creds = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=SCOPES)
     client = gspread.authorize(creds)
     return client
 
-def load_company_colors():
-    """조모임 파일에서 업체별 색상 그룹을 추출하여 google color 객체로 매핑"""
+def load_company_map():
+    """조모임 파일에서 업체별 색상 및 그룹 정보를 추출"""
     file_path = os.path.join(FOLDER_PATH, COLOR_FILE_NAME)
     if not os.path.exists(file_path):
         print(f"Color file not found: {file_path}")
@@ -41,64 +48,55 @@ def load_company_colors():
         wb = openpyxl.load_workbook(file_path, data_only=True)
         ws = wb.active
         
-        company_colors = {}
+        company_map = {} # company -> {'group': 'Theme_X', 'color': ColorObj}
         
-        # 색상 매핑 (Theme/Tint -> Google Color)
-        # 1. Theme 9 (경남 등) -> Green (더 진한 쑥색/녹색)
-        color_group_1 = Color(0.7, 0.9, 0.7) 
-        
-        # 2. Theme 6 (계룡 등) -> Orange (더 진한 살구색/주황)
-        color_group_2 = Color(1.0, 0.8, 0.6)
-        
-        # 3. Theme 8 (금호 등) -> Yellow (진한 노랑)
-        color_group_3 = Color(1.0, 1.0, 0.6)
-
         for row in ws.iter_rows():
             for cell in row:
                 if cell.value and isinstance(cell.value, str):
                     fill = cell.fill
                     if fill and fill.start_color:
                         color = fill.start_color
-                        key = ""
+                        theme_key = ""
                         if color.type == 'theme':
-                            key = f"Theme_{color.theme}"
+                            theme_key = f"Theme_{color.theme}"
                         
-                        target_color = None
-                        if "Theme_9" in key: target_color = color_group_1
-                        elif "Theme_6" in key: target_color = color_group_2
-                        elif "Theme_8" in key: target_color = color_group_3
+                        matched_group_key = None
+                        if "Theme_9" in theme_key: matched_group_key = 'Theme_9'
+                        elif "Theme_6" in theme_key: matched_group_key = 'Theme_6'
+                        elif "Theme_8" in theme_key: matched_group_key = 'Theme_8'
                         
-                        if target_color:
+                        if matched_group_key:
                             company = cell.value.strip()
-                            company_colors[company] = target_color
+                            company_map[company] = {
+                                'group_key': matched_group_key,
+                                'color': GROUP_COLORS[matched_group_key]['color']
+                            }
                             
-        return company_colors
+        return company_map
     except Exception as e:
         print(f"Error loading colors: {e}")
         return {}
 
-def find_color_for_company(company_name, color_map):
-    """회사명에 맞는 색상을 부분 일치로 검색"""
+def find_company_info(company_name, company_map):
+    """회사명에 맞는 정보(색상, 그룹)를 부분 일치로 검색"""
     if not company_name: return None
 
     # 1. 완전 일치
-    if company_name in color_map:
-        return color_map[company_name]
+    if company_name in company_map:
+        return company_map[company_name]
     
     # 2. 정제 후 부분 일치
-    # (주), 주식회사, 공백 제거
     clean_target = company_name.replace("주식회사", "").replace("(주)", "").replace(" ", "")
     
     if not clean_target: return None
 
-    for key_name, color in color_map.items():
+    for key_name, info in company_map.items():
         clean_key = key_name.replace("주식회사", "").replace("(주)", "").replace(" ", "")
         
         if not clean_key: continue
 
-        # 키가 타겟에 포함되거나, 타겟이 키에 포함되는 경우
         if len(clean_key) > 1 and (clean_key in clean_target or clean_target in clean_key):
-             return color
+             return info
              
     return None
 
@@ -169,6 +167,7 @@ def main():
     except gspread.WorksheetNotFound:
         worksheet = sh.add_worksheet(title=WORKSHEET_NAME, rows=1000, cols=20)
     
+    # 1. Excel 파일 처리
     files = [f for f in os.listdir(FOLDER_PATH) if f.endswith('.xlsb')]
     
     zone_data = {}
@@ -179,7 +178,9 @@ def main():
         zone_data[zone] = rows
 
     sorted_zones = sorted(zone_data.keys())
+    company_map = load_company_map() # 색상 정보 로드
     
+    # 2. 메인 데이터 구성
     upload_rows = []
     
     header1 = []
@@ -212,58 +213,105 @@ def main():
                 row_data.extend(["", "", "", ""])
         upload_rows.append(row_data)
 
-    if upload_rows:
+    # 3. 평균 계산 (Groups per Zone)
+    summary_start_row = len(upload_rows) + 3 # 메인 데이터와 요약 표 사이 간격
+    summary_rows = []
+    
+    # 요약 테이블 헤더
+    summary_header = ["구분"]
+    for zone in sorted_zones:
+        summary_header.append(f"{zone} 평균(%)")
+    summary_rows.append(summary_header)
+    
+    # 그룹별 로우 생성
+    groups = ['Theme_9', 'Theme_6', 'Theme_8'] # 순서 지정
+    group_display_names = {
+        'Theme_9': "Color Group 1 (Green)",
+        'Theme_6': "Color Group 2 (Orange)",
+        'Theme_8': "Color Group 3 (Yellow)"
+    }
+    
+    for group_key in groups:
+        row = [group_display_names[group_key]]
+        for zone in sorted_zones:
+            # 해당 공구, 해당 그룹의 ratio 수집
+            rows = zone_data[zone]
+            ratios = []
+            for entry in rows:
+                clean_name = str(entry['company']).replace("★ ", "").strip()
+                info = find_company_info(clean_name, company_map)
+                if info and info['group_key'] == group_key:
+                    ratios.append(entry['ratio'])
+            
+            if ratios:
+                avg = sum(ratios) / len(ratios)
+                row.append(round(avg, 4))
+            else:
+                row.append("-")
+        summary_rows.append(row)
+
+    # 4. 데이터 업로드 (메인 + 요약)
+    final_payload = upload_rows + [[] for _ in range(2)] + summary_rows # 2줄 빈칸 추가
+    
+    if final_payload:
         print("Uploading data...")
-        worksheet.update(upload_rows)
+        worksheet.update(final_payload)
         
         # --- 스타일링 ---
         print("Applying styles...")
         
-        # 하늘색 (공구/순위 열)
+        batch = []
+        total_rows = len(upload_rows) # 메인 데이터만 색칠하기 위해
+        
+        # [메인] 하늘색 (공구/순위 열)
         light_blue = Color(0.85, 0.93, 1.0) 
         fmt_blue = CellFormat(backgroundColor=light_blue)
         
-        batch = []
-        total_rows = len(upload_rows)
-        
-        # 1. 공구/순위 열 하늘색 적용
         for i in range(len(sorted_zones)):
             col_idx = i * 4 + 1
             start_cell = rowcol_to_a1(1, col_idx)
-            end_cell = rowcol_to_a1(total_rows, col_idx)
+            end_cell = rowcol_to_a1(total_rows, col_idx) # 메인 데이터 높이까지만
             range_str = f"{start_cell}:{end_cell}"
             batch.append((range_str, fmt_blue))
             
-        # 2. 업체별 색상 적용 (부분 일치)
-        company_colors = load_company_colors()
-        color_batch_size = 0
-        
-        if company_colors:
-            print(f"Loaded {len(company_colors)} company colors for matching.")
-            
+        # [메인] 업체별 색상 적용 (부분 일치)
+        if company_map:
             for row_idx in range(2, total_rows): 
                 row_data = upload_rows[row_idx]
-                
                 for i in range(len(sorted_zones)):
                     sheet_col_idx = i * 4 + 2 
                     list_col_idx = i * 4 + 1  
-                    
                     if list_col_idx < len(row_data):
                         original_val = str(row_data[list_col_idx])
                         company_val = original_val.replace("★ ", "").strip()
-                        
                         if not company_val: continue
                         
-                        # 부분 일치 검색
-                        matched_color = find_color_for_company(company_val, company_colors)
-                        
-                        if matched_color:
+                        info = find_company_info(company_val, company_map)
+                        if info:
                             cell_a1 = rowcol_to_a1(row_idx + 1, sheet_col_idx) 
-                            fmt_company = CellFormat(backgroundColor=matched_color)
+                            fmt_company = CellFormat(backgroundColor=info['color'])
                             batch.append((cell_a1, fmt_company))
-                            color_batch_size += 1
-                        elif row_idx < 10: 
-                             print(f"No match for: '{company_val}'")
+
+        # [요약] 테이블 스타일링
+        # summary_start_row (1-based index calculation required)
+        # final_payload 상에서 summary title은: len(upload_rows) + 2 (빈줄 2개 후) index -> +1 for sheet row
+        sheet_summary_start_row = len(upload_rows) + 3
+        
+        # 요약 헤더 볼드체
+        header_range = f"A{sheet_summary_start_row}:E{sheet_summary_start_row}" # 4개 공구 + 구분 = 5열(E)
+        fmt_bold = CellFormat(textFormat=TextFormat(bold=True))
+        batch.append((header_range, fmt_bold))
+        
+        # 요약 행 배경색 적용
+        for idx, group_key in enumerate(groups):
+            row_num = sheet_summary_start_row + 1 + idx
+            # A열(이름)에 색상 적용
+            cell_addr = f"A{row_num}"
+            color = GROUP_COLORS[group_key]['color']
+            
+            # 셀 배경색
+            fmt_group = CellFormat(backgroundColor=color, textFormat=TextFormat(bold=True))
+            batch.append((cell_addr, fmt_group))
 
         print(f"Applying {len(batch)} format changes...")
         format_cell_ranges(worksheet, batch)
