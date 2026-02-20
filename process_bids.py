@@ -217,23 +217,26 @@ def main():
     summary_start_row = len(upload_rows) + 3 # 메인 데이터와 요약 표 사이 간격
     summary_rows = []
     
-    # 요약 테이블 헤더
-    summary_header = ["구분"]
-    for zone in sorted_zones:
-        summary_header.append(f"{zone} 평균(%)")
-    summary_rows.append(summary_header)
+    # 3.1 구분 타이틀 행
+    title_row = ["■ 그룹별 평균 기초대비(%)"] + [""] * (len(sorted_zones) * 4 - 1)
+    summary_rows.append(title_row)
     
-    # 그룹별 로우 생성
+    # 3.2 그룹별 로우 생성
     groups = ['Theme_9', 'Theme_6', 'Theme_8'] # 순서 지정
     group_display_names = {
-        'Theme_9': "Color Group 1 (Green)",
-        'Theme_6': "Color Group 2 (Orange)",
-        'Theme_8': "Color Group 3 (Yellow)"
+        'Theme_9': "Group A (Green)",
+        'Theme_6': "Group B (Orange)",
+        'Theme_8': "Group C (Yellow)"
     }
     
     for group_key in groups:
-        row = [group_display_names[group_key]]
-        for zone in sorted_zones:
+        # 전체 열 개수만큼 빈 리스트 생성
+        row = [""] * (len(sorted_zones) * 4)
+        
+        # 첫 번째 열에 그룹명 표시
+        row[0] = group_display_names[group_key]
+        
+        for i, zone in enumerate(sorted_zones):
             # 해당 공구, 해당 그룹의 ratio 수집
             rows = zone_data[zone]
             ratios = []
@@ -243,11 +246,16 @@ def main():
                 if info and info['group_key'] == group_key:
                     ratios.append(entry['ratio'])
             
+            # 비율 열(Ratio Index) 위치에 평균값 배치
+            # 각 공구의 4번째 열 (index 3, 7, 11...)
+            ratio_col_idx = i * 4 + 3
+            
             if ratios:
                 avg = sum(ratios) / len(ratios)
-                row.append(round(avg, 4))
+                row[ratio_col_idx] = round(avg, 4)
             else:
-                row.append("-")
+                row[ratio_col_idx] = "-"
+                
         summary_rows.append(row)
 
     # 4. 데이터 업로드 (메인 + 요약)
@@ -293,25 +301,33 @@ def main():
                             batch.append((cell_a1, fmt_company))
 
         # [요약] 테이블 스타일링
-        # summary_start_row (1-based index calculation required)
-        # final_payload 상에서 summary title은: len(upload_rows) + 2 (빈줄 2개 후) index -> +1 for sheet row
+        # sheet_summary_start_row 계산
+        # upload_rows 길이 + 빈줄 2개 + 1 (1-based index)
         sheet_summary_start_row = len(upload_rows) + 3
         
-        # 요약 헤더 볼드체
-        header_range = f"A{sheet_summary_start_row}:E{sheet_summary_start_row}" # 4개 공구 + 구분 = 5열(E)
+        # 타이틀 행 볼드체
+        title_range = f"A{sheet_summary_start_row}:A{sheet_summary_start_row}" 
         fmt_bold = CellFormat(textFormat=TextFormat(bold=True))
-        batch.append((header_range, fmt_bold))
+        batch.append((title_range, fmt_bold))
         
-        # 요약 행 배경색 적용
+        # 그룹별 행 배경색 적용
+        # 타이틀 행 다음부터 시작 (+1)
         for idx, group_key in enumerate(groups):
             row_num = sheet_summary_start_row + 1 + idx
-            # A열(이름)에 색상 적용
-            cell_addr = f"A{row_num}"
-            color = GROUP_COLORS[group_key]['color']
             
-            # 셀 배경색
+            # 전체 행(데이터 있는 구간)에 색상 적용
+            # A열부터 마지막 열까지
+            last_col_char = rowcol_to_a1(row_num, len(sorted_zones) * 4) # 마지막 열 알파벳 구하기 위해 임시 사용? -> no, returns like P105
+            # 단순히 A{row} : {EndCol}{row}
+            # EndCol index = len(sorted_zones) * 4
+            
+            start_cell = f"A{row_num}"
+            end_cell = rowcol_to_a1(row_num, len(sorted_zones) * 4)
+            range_str = f"{start_cell}:{end_cell}"
+            
+            color = GROUP_COLORS[group_key]['color']
             fmt_group = CellFormat(backgroundColor=color, textFormat=TextFormat(bold=True))
-            batch.append((cell_addr, fmt_group))
+            batch.append((range_str, fmt_group))
 
         print(f"Applying {len(batch)} format changes...")
         format_cell_ranges(worksheet, batch)
