@@ -1,0 +1,2 @@
+echo "import antigravity" > main.py
+echo "print('Flying with Git!')" >> main.py
