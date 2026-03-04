@@ -84,6 +84,7 @@ def process_file_rank1(file_path):
         
         project_name = ""
         client_str = ""
+        estimated_price = 0 # 예정가격
         base_amount = 0 # 기초금액
         balance_price = 0 # 균형가격
         header_row_idx = -1
@@ -113,13 +114,16 @@ def process_file_rank1(file_path):
         
         try:
             # I4 is index 3, 8
+            # I5 is index 4, 8
             # I6 is index 5, 8
             base_val = df.iloc[3, 8]
+            est_val = df.iloc[4, 8]
             bal_val = df.iloc[5, 8]
             if not pd.isna(base_val): base_amount = float(base_val)
+            if not pd.isna(est_val): estimated_price = float(est_val)
             if not pd.isna(bal_val): balance_price = float(bal_val)
         except Exception as e:
-            print(f"Error extracting I4/I6 for {filename}: {e}")
+            print(f"Error extracting I4/I5/I6 for {filename}: {e}")
         
         if header_row_idx == -1: return None
 
@@ -169,6 +173,7 @@ def process_file_rank1(file_path):
                         'company': company,
                         'decision_method': decision_method,
                         'amount': int(amount),
+                        'estimated_price': int(estimated_price) if estimated_price else 0,
                         'base_amount': int(base_amount) if base_amount else 0,
                         'balance_price': int(balance_price) if balance_price else 0,
                         'ratio': ratio,
@@ -211,15 +216,22 @@ def main():
     # B: 공고명
     # C: 수요기관
     # D: 낙찰자
-    # E: 기초금액
-    # F: 균형가격
-    # G: 균형/기초 (%)
-    # H: 투찰/기초 (%) = (투찰금액 / 기초금액) * 100
-    # I: 투찰금액(원)
-    # J: 비고
+    # E: 결정방식
+    # F: 예정가격(원)
+    # G: 기초금액(원)
+    # H: 균형가격(원)
+    # I: 예정/기초 (%) = (예정가격 / 기초금액) * 100
+    # J: 균형/기초 (%)
+    # K: 투찰/기초 (%) = (투찰금액 / 기초금액) * 100
+    # L: 투찰금액(원)
+    # M: 비고
     
-    upload_rows = [["입찰일시", "공고명", "수요기관", "낙찰자", "결정방식", "기초금액(원)", "균형가격(원)", "균형/기초(%)", "투찰/기초(%)", "투찰금액(원)", "비고"]]
+    upload_rows = [["입찰일시", "공고명", "수요기관", "낙찰자", "결정방식", "예정가격(원)", "기초금액(원)", "균형가격(원)", "예정/기초(%)", "균형/기초(%)", "투찰/기초(%)", "투찰금액(원)", "비고"]]
     for r in results:
+        est_base_ratio = 0
+        if r['base_amount'] > 0:
+            est_base_ratio = (r['estimated_price'] / r['base_amount']) * 100
+            
         bal_base_ratio = 0
         if r['base_amount'] > 0:
             bal_base_ratio = (r['balance_price'] / r['base_amount']) * 100
@@ -234,8 +246,10 @@ def main():
             r['client'],
             r['company'],
             r['decision_method'],
+            r['estimated_price'],
             r['base_amount'],
             r['balance_price'],
+            round(est_base_ratio, 4),
             round(bal_base_ratio, 4),
             round(bid_base_ratio, 4),
             r['amount'],
@@ -263,22 +277,22 @@ def main():
             backgroundColor=Color(0.2, 0.46, 0.33),
             textFormat=TextFormat(bold=True, foregroundColor=Color(1, 1, 1))
         )
-        format_cell_range(worksheet, "A1:K1", header_fmt)
+        format_cell_range(worksheet, "A1:M1", header_fmt)
         
-        # Money format for F, G, J (기초금액, 균형가격, 투찰금액)
+        # Money format for F, G, H, L (예정가격, 기초금액, 균형가격, 투찰금액)
         num_fmt = CellFormat(numberFormat=NumberFormat(type='NUMBER', pattern='#,##0'))
-        format_cell_range(worksheet, f"F2:G{total_rows}", num_fmt)
-        format_cell_range(worksheet, f"J2:J{total_rows}", num_fmt)
+        format_cell_range(worksheet, f"F2:H{total_rows}", num_fmt)
+        format_cell_range(worksheet, f"L2:L{total_rows}", num_fmt)
         
-        # Ratio format for H, I (균형/기초, 투찰/기초)
+        # Ratio format for I, J, K (예정/기초, 균형/기초, 투찰/기초)
         ratio_fmt = CellFormat(numberFormat=NumberFormat(type='NUMBER', pattern='0.0###'))
-        format_cell_range(worksheet, f"H2:I{total_rows}", ratio_fmt)
+        format_cell_range(worksheet, f"I2:K{total_rows}", ratio_fmt)
         
         # Borders
         border_style = Border(style='SOLID', color=Color(0.8, 0.8, 0.8))
         full_borders = Borders(top=border_style, bottom=border_style, left=border_style, right=border_style)
         border_fmt = CellFormat(borders=full_borders)
-        format_cell_range(worksheet, f"A1:K{total_rows}", border_fmt)
+        format_cell_range(worksheet, f"A1:M{total_rows}", border_fmt)
         
         # Column Widths
         set_column_width(worksheet, 'A', 130) # Date
@@ -286,12 +300,14 @@ def main():
         set_column_width(worksheet, 'C', 180) # Client
         set_column_width(worksheet, 'D', 150) # Company
         set_column_width(worksheet, 'E', 100) # Decision Method
-        set_column_width(worksheet, 'F', 130) # Base Amount
-        set_column_width(worksheet, 'G', 130) # Balance Price
-        set_column_width(worksheet, 'H', 100) # Bal/Base
-        set_column_width(worksheet, 'I', 100) # Bid/Base
-        set_column_width(worksheet, 'J', 130) # Bid Amount
-        set_column_width(worksheet, 'K', 120) # Note
+        set_column_width(worksheet, 'F', 130) # Estimated Price
+        set_column_width(worksheet, 'G', 130) # Base Amount
+        set_column_width(worksheet, 'H', 130) # Balance Price
+        set_column_width(worksheet, 'I', 100) # Est/Base
+        set_column_width(worksheet, 'J', 100) # Bal/Base
+        set_column_width(worksheet, 'K', 100) # Bid/Base
+        set_column_width(worksheet, 'L', 130) # Bid Amount
+        set_column_width(worksheet, 'M', 120) # Note
         
         print("Data upload and formatting complete!")
         print(f"Access point: {sh.url}")
