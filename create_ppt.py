@@ -72,6 +72,12 @@ def create_ppt():
     df_summary['Faction'] = pd.Categorical(df_summary['Faction'], categories=sorter, ordered=True)
     df_summary = df_summary.sort_values('Faction')
 
+    # 업체별 낙찰 건수 계산 및 범례 이름 업데이트
+    company_win_counts = df_winners['WinnerCompany'].value_counts()
+    df_summary['Company'] = df_summary['Company'].apply(
+        lambda x: f"{x} ({company_win_counts.get(x, 0)}건)" if pd.notna(x) else x
+    )
+
     ax = sns.barplot(data=df_summary, x='Faction', y='mean_pct', hue='Company', palette='tab20')
     
     # 해당 세력의 누적 낙찰 갯수 계산하여 제목/범례에 추가
@@ -168,7 +174,29 @@ def create_ppt():
     pic = slide.shapes.add_picture(chart_path, left, top, width=pic_width)
     
     # -----------------------------------------------------------------
-    unique_sites = df_raw['Site'].unique()
+    df_winners['Site'] = df_winners['File'].astype(str).apply(clean_filename)
+    import re
+    def get_date_val(site):
+        orig_file = ""
+        cw = df_winners[df_winners['Site'] == site]
+        if not cw.empty:
+            orig_file = cw.iloc[0]['File']
+        else:
+            cr = df_raw[df_raw['Site'] == site]
+            if not cr.empty:
+                orig_file = cr.iloc[0]['File']
+        
+        if orig_file:
+            match = re.search(r'(?:입찰결과\s*-\s*)?(\d{2})(\d{2})(\d{2})', str(orig_file))
+            if match:
+                yy = int(match.group(1))
+                mm = int(match.group(2))
+                dd = int(match.group(3))
+                year = 2000 + yy if yy < 50 else 1900 + yy
+                return year * 10000 + mm * 100 + dd
+        return 99999999
+
+    unique_sites = sorted(df_raw['Site'].unique(), key=get_date_val)
     chunk_size = 4 
     total_pages = math.ceil(len(unique_sites) / chunk_size)
     
@@ -185,18 +213,39 @@ def create_ppt():
         plt.title(f'개별 현장별 세력 경쟁 및 투찰률 추이 ({i+1}/{total_pages})', fontsize=12, fontweight='bold')
         plt.ylabel('투찰률 (%)', fontsize=10)
         
-        # X축 라벨(현장명)에 낙찰사 정보 추가 및 겹침 방지 처리
+        # X축 라벨(현장명)에 낙찰사 정보 및 입찰 연/월 추가
         new_labels = []
         import textwrap
+        import re
         for site in chunk_sites:
             winner = "미상"
+            orig_file_for_date = ""
             for _, wrow in df_winners.iterrows():
                 if clean_filename(wrow['File']) == site:
                     winner = wrow['WinnerCompany']
+                    orig_file_for_date = wrow['File']
                     break
-            # 사이트 이름이 너무 길면 줄바꿈, 아래 낙찰사 이름 추가
+                    
+            if not orig_file_for_date:
+                orig_files = df_raw[df_raw['Site'] == site]['File'].unique()
+                if len(orig_files) > 0:
+                    orig_file_for_date = orig_files[0]
+                    
+            date_str = ""
+            if orig_file_for_date:
+                match = re.search(r'(?:입찰결과\s*-\s*)?(\d{2})(\d{2})\d{2}', orig_file_for_date)
+                if match:
+                    yy = int(match.group(1))
+                    mm = int(match.group(2))
+                    year = 2000 + yy if yy < 50 else 1900 + yy
+                    date_str = f"[{year}년 {mm}월]"
+
+            # 사이트 이름이 너무 길면 줄바꿈, 아래 날짜와 낙찰사 추가
             wrapped_site = textwrap.fill(site, width=18)
-            new_labels.append(f"{wrapped_site}\n[낙찰: {winner}]")
+            if date_str:
+                new_labels.append(f"{wrapped_site}\n{date_str}\n[낙찰: {winner}]")
+            else:
+                new_labels.append(f"{wrapped_site}\n[낙찰: {winner}]")
             
         ax.set_xticks(range(len(new_labels)))
         ax.set_xticklabels(new_labels, rotation=10, ha='center', fontsize=8)
